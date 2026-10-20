@@ -1,7 +1,7 @@
 # Git lint and fixer pre-commit hook
 
-This directory contains a standalone, local Git hook that runs the linters and
-fixers configured in `~/.config/vim/plugin/ale.vim`. It does not use Vim, ALE,
+This project is a standalone, local Git hook that runs my collection of linters and
+fixers inspired in my `vim + ale plugin` configuration. It does not use Vim, ALE,
 or cloud CI. The hook processes staged files only and stages its formatting
 changes automatically.
 
