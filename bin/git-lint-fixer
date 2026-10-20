@@ -1,0 +1,234 @@
+#!/usr/bin/env python3
+"""Install and run the local staged-file lint/fix Git hook."""
+
+from __future__ import annotations
+
+import os
+import shlex
+import subprocess
+import sys
+from pathlib import Path, PurePosixPath
+
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+HOOK_MARKER = "# managed by git-lint-fixer-precommit"
+
+
+def git(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+
+def repository_root() -> Path:
+    result = git("rev-parse", "--show-toplevel")
+    if result.returncode:
+        raise RuntimeError(
+            "Run this command from inside a Git repository: " + result.stderr.decode(errors="replace").strip()
+        )
+    return Path(os.fsdecode(result.stdout.rstrip(b"\n"))).resolve()
+
+
+def hook_file(root: Path) -> Path:
+    result = git("rev-parse", "--git-path", "hooks/pre-commit", cwd=root)
+    if result.returncode:
+        raise RuntimeError(
+            "Could not locate the Git hooks directory: " + result.stderr.decode(errors="replace").strip()
+        )
+    path = Path(os.fsdecode(result.stdout.rstrip(b"\n")))
+    return path if path.is_absolute() else root / path
+
+
+def install(uninstall: bool = False) -> int:
+    root = repository_root()
+    path = hook_file(root)
+    if uninstall:
+        if path.is_symlink():
+            print(f"Refusing to remove symlinked hook: {path}", file=sys.stderr)
+            return 1
+        if not path.exists():
+            print(f"No pre-commit hook found at {path}")
+            return 0
+        contents = path.read_text(encoding="utf-8", errors="replace")
+        if HOOK_MARKER not in contents:
+            print(f"Refusing to remove unrelated hook: {path}", file=sys.stderr)
+            return 1
+        path.unlink()
+        print(f"Removed {path}")
+        return 0
+
+    if path.is_symlink():
+        print(f"Refusing to replace symlinked hook: {path}", file=sys.stderr)
+        return 1
+    if path.exists():
+        contents = path.read_text(encoding="utf-8", errors="replace")
+        if HOOK_MARKER not in contents:
+            print(
+                f"Refusing to replace unrelated hook: {path}",
+                file=sys.stderr,
+            )
+            return 1
+
+    executable = shlex.quote(str(Path(__file__).resolve()))
+    hook_contents = "#!/usr/bin/env bash\n" f"{HOOK_MARKER}\n" f'exec {executable} run "$@"\n'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(hook_contents, encoding="utf-8")
+    path.chmod(0o755)
+    print(f"Installed {path}")
+    return 0
+
+
+def staged_files(root: Path) -> list[Path]:
+    result = git(
+        "diff",
+        "--cached",
+        "--name-only",
+        "--diff-filter=ACMR",
+        "-z",
+        cwd=root,
+    )
+    if result.returncode:
+        raise RuntimeError("Could not read staged files: " + result.stderr.decode(errors="replace").strip())
+    return [root / os.fsdecode(name) for name in result.stdout.split(b"\0") if name]
+
+
+def commands_for(path: Path, root: Path) -> list[list[str]]:
+    extension = path.suffix.lower()
+    relative = PurePosixPath(path.relative_to(root).as_posix())
+    configs = PROJECT_DIR / "config"
+
+    if extension == ".py":
+        return [
+            ["ruff", "check", "--fix", str(path)],
+            ["black", "--line-length", "120", str(path)],
+            ["isort", str(path)],
+        ]
+    if extension in {".cc", ".cpp", ".cxx", ".hh", ".hpp", ".hxx"}:
+        return [
+            [
+                "clang-format",
+                "-i",
+                "--style={UseTab: Never}",
+                str(path),
+            ]
+        ]
+    if extension in {".sh", ".bash"}:
+        return [
+            ["shellcheck", str(path)],
+            ["shfmt", "-i", "4", "-w", str(path)],
+        ]
+    if extension == ".sql":
+        config = str(configs / "sqlfluff")
+        return [
+            ["sqlfluff", "fix", "--force", "--config", config, str(path)],
+            ["sqlfluff", "lint", "--config", config, str(path)],
+        ]
+    if extension == ".vim":
+        return [["vint", str(path)]]
+    if extension in {".yaml", ".yml"}:
+        commands = [
+            [
+                "yamlfix",
+                "--config-file",
+                str(configs / "yamlfix.toml"),
+                str(path),
+            ],
+            ["yamllint", "-c", str(configs / "yamllint.yaml"), str(path)],
+        ]
+        if relative.parts[:2] == (".github", "workflows"):
+            commands.append(["actionlint", str(path)])
+        return commands
+    return []
+
+
+def run_tool(command: list[str], root: Path) -> bool:
+    try:
+        result = subprocess.run(command, cwd=root, check=False)
+    except FileNotFoundError:
+        print(
+            f"Required executable not found on PATH: {command[0]}",
+            file=sys.stderr,
+        )
+        return False
+    return result.returncode == 0
+
+
+def run_hook() -> int:
+    root = repository_root()
+    files = staged_files(root)
+    targets = [(path, commands_for(path, root)) for path in files]
+    targets = [(path, commands) for path, commands in targets if commands]
+
+    if not targets:
+        return 0
+
+    for path, _ in targets:
+        if path.is_symlink():
+            print(f"Skipping symlink: {path.relative_to(root)}")
+            continue
+        if not path.is_file():
+            print(f"Staged file is missing from the working tree: {path}", file=sys.stderr)
+            return 1
+        result = git("diff", "--quiet", "--", str(path.relative_to(root)), cwd=root)
+        if result.returncode == 1:
+            print(
+                f"Unstaged edits in {path.relative_to(root)}; stage or stash " "them before committing.",
+                file=sys.stderr,
+            )
+            return 1
+        if result.returncode:
+            print(
+                f"Could not check working-tree state for {path.relative_to(root)}",
+                file=sys.stderr,
+            )
+            return 1
+
+    success = True
+    processed: list[Path] = []
+    for path, commands in targets:
+        if path.is_symlink():
+            continue
+        processed.append(path)
+        for command in commands:
+            if not run_tool(command, root):
+                success = False
+
+    if processed:
+        result = git(
+            "add",
+            "--",
+            *(str(path.relative_to(root)) for path in processed),
+            cwd=root,
+        )
+        if result.returncode:
+            print(
+                "Could not stage formatted files: " + result.stderr.decode(errors="replace").strip(),
+                file=sys.stderr,
+            )
+            return 1
+    return 0 if success else 1
+
+
+def main(arguments: list[str]) -> int:
+    if arguments == ["install"]:
+        return install()
+    if arguments == ["uninstall"]:
+        return install(uninstall=True)
+    if arguments == ["run"]:
+        try:
+            return run_hook()
+        except RuntimeError as error:
+            print(error, file=sys.stderr)
+            return 1
+    print(
+        "Usage: git-lint-fixer {install|uninstall|run}",
+        file=sys.stderr,
+    )
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
