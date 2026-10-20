@@ -10,7 +10,7 @@ changes automatically.
 From the target Git repository, run:
 
 ```bash
-python3 /path/to/cheatsheets/git-lint-fixer-precommit/bin/git-lint-fixer install
+python3 /path/to/this/repo/git-lint-fixer-precommit/bin/git-lint-fixer install
 ```
 
 The installer creates or updates `.git/hooks/pre-commit`. It refuses to replace
