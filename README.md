@@ -10,7 +10,7 @@ changes automatically.
 From the target Git repository, run:
 
 ```bash
-python3 /path/to/this/repo/git-lint-fixer-precommit/bin/git-lint-fixer install
+python3 /path/to/this/repo/git-precommit-fixer-formatter/bin/git-lint-fixer install
 ```
 
 The installer creates or updates `.git/hooks/pre-commit`. It refuses to replace
@@ -77,7 +77,7 @@ fixtures cover Python, C++, Bash, shell, SQL, Vim, YAML, and YML.
 
 ## OTHER SEMI HOOK PRACTICES
 
-**Only `pre-commit` and `pre-push` are native Git hooks.** “Pre-testing” is a workflow step we define, not a Git hook.
+**Only `pre-commit` and `pre-push` are native Git hooks.** “Pre-testing” should be a custom workflow step.
 
 | Stage | Native Git hook? | When it runs |
 | --- | --- | --- |
@@ -85,4 +85,6 @@ fixtures cover Python, C++, Bash, shell, SQL, Vim, YAML, and YML.
 | Pre-testing / full check | No | Manually through a command that runs mypy, optional Pylint, and tests |
 | `pre-push` | Yes | Before pushing; failure blocks the push |
 
-For your local setup, use **`pre-commit` for fast formatting/linting**, plus **one explicit full-check command**. An optional `pre-push` hook can invoke that same command automatically. Both native hooks can be bypassed with `--no-verify`, so they’re convenience safeguards, not enforcement.
+Here only the **`pre-commit` for fast formatting/linting** is implemented. But both **explicit full-check command** and a **`pre-push` hook** can be easily extended. 
+
+Both native hooks can be bypassed with `--no-verify`, so they’re convenience safeguards, not enforcement.
